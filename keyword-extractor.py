@@ -37,7 +37,10 @@ class ExtractKeyWords():
 		Using re was more effective to removing punctuation than filtering via string.punctuation.
 		'''
 		self.paragraph = self.raw_text.read()
-		self.allwords = re.findall('[^!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~\n\s ]+',self.paragraph)
+		print("Raw paragraph:", self.paragraph)  # Debug: show file content
+		# Try a simpler regex to extract words
+		self.allwords = re.findall(r'\w+', self.paragraph)
+		print("Extracted words with r'\\w+':", self.allwords)  # Debug: show extracted words
 		#return self.allwords
 	
 	def keywords(self):
@@ -60,12 +63,15 @@ class ExtractKeyWords():
 		
 
 def syn_word_clm(df,clm_name):
-	for i in range(0,len(df)):
-		try:
-			yield wordnet.synsets(df.loc[i,clm_name])[0].name()
-		
-		except IndexError:
-			yield None
+    for i in range(0,len(df)):
+        try:
+            yield wordnet.synsets(df.loc[i,clm_name])[0].name()
+        except IndexError as e:
+            print(f"IndexError in syn_word_clm at row {i} for value '{df.loc[i,clm_name]}': {e}")
+            yield None
+        except Exception as e:
+            print(f"Error in syn_word_clm at row {i} for value '{df.loc[i,clm_name]}': {e}")
+            yield None
 
 def word_type(row):
 	if row == None:
@@ -74,52 +80,76 @@ def word_type(row):
 		return row[-5:-2]
 
 def score(col1,col2):
-	
-	for i in range(0,len(col1)):
-		try:
-			w1 = wordnet.synset(col1.loc[i])
-			w2 = wordnet.synset(col2.loc[i]) 
-			yield w1.wup_similarity(w2)
-	
-		except:
-			yield None
+    for i in range(0,len(col1)):
+        try:
+            w1 = wordnet.synset(col1.loc[i])
+            w2 = wordnet.synset(col2.loc[i]) 
+            yield w1.wup_similarity(w2)
+        except Exception as e:
+            print(f"Error in score at index {i} with values ({col1.loc[i]}, {col2.loc[i]}): {e}")
+            yield None
 
 
 if __name__ == '__main__':
 
-	doc = open('your_file_name.txt','r')
-	wp = ExtractKeyWords(raw_text=doc, source_name='where did you get your document', description='description, keywords, or tags')
+    doc = open('analyze-text.txt','r')
+    wp = ExtractKeyWords(raw_text=doc, source_name='where did you get your document', description='description, keywords, or tags')
 
-	wp.nopunc()
-	wp.keywords()
-	wp.join_kwords()
-	wp.lemmatizer()
+    wp.nopunc()
+    print("All words after nopunc:", wp.allwords)
+    wp.keywords()
+    print("Keywords after filtering:", wp.kwords)
+    wp.lemmatizer()
+    wp.join_kwords()
+    print("Lemmatized words:", wp.processed_words)
 
-	d = {'Words': wp.processed_words}
-	df = pd.DataFrame(data=d)
-	x = df['Words'].value_counts()
-	dfx = pd.DataFrame(x)
-	top = dfx[(dfx.index == 'r') | (dfx['Words'] > 2)]
-	top.reset_index(inplace=True)
-	top.columns = ['Word','Count']
+    d = {'Words': wp.processed_words}
+    df = pd.DataFrame(data=d)
+    print("DataFrame of processed words:\n", df)
+    x = df['Words'].value_counts()
+    dfx = pd.DataFrame(x)
+    dfx.columns = ['Count']  # Rename the count column
+    dfx.index.name = 'Word' # Name the index for clarity
+    print("Value counts before filtering:")
+    print(dfx)
 
-	top = top.assign(Synonym = list(syn_word_clm(top,'Word')))
-	top = top.assign(Word_Eval = top['Word'] + top['Synonym'].apply(word_type) + '01')
-	top = top.assign(Similarity = list(score(top['Word_Eval'],top['Synonym'])))
+    top = dfx  # Show all words, no filtering
 
-	trunc = top.sort_values(by='Count',ascending=False)
+    # Check for empty DataFrame before further processing
+    if top.empty:
+        print("No keywords available after filtering. Skipping visualization.")
+    else:
+        top = top.reset_index()  # Now columns are ['Word', 'Count']
+        top = top.assign(Synonym = list(syn_word_clm(top,'Word')))
+        top['Word_Eval'] = top.apply(
+            lambda row: str(row['Word']) + (str(word_type(row['Synonym'])) if word_type(row['Synonym']) is not None else '') + '01',
+            axis=1
+        )
+        top = top.assign(Similarity = list(score(top['Word_Eval'],top['Synonym'])))
+        trunc = top.sort_values(by='Count',ascending=False)
 
-	print(f'Source:      {wp.source_name.capitalize()}')
-	print(f'Description: {wp.description.capitalize()}')
-	print(f'\n{top.head(10)}')
+        print(f'Source:      {wp.source_name.capitalize()}')
+        print(f'Description: {wp.description.capitalize()}')
+        print(f'\n{top.head(10)}')
 
-	sns.set_style('whitegrid')
-	sns.set_context("paper",font_scale=1.0)
-	f, ax = plt.subplots(figsize=(6, 8), dpi = 120)
+        # Find the max count for highlighting
+        max_count = trunc['Count'].max()
+        colors = ['red' if count == max_count else 'blue' for count in trunc['Count'].iloc[:20]]
 
-	g = sns.barplot(x='Count', y='Word', data=trunc.iloc[:20], palette='Blues_d', label='Key Words')
-	g2 = sns.barplot(x=top['Count'].max(), y='Word', data=trunc.iloc[:20], color='r', label='Max')
-	scale = list(range(0,top['Count'].max()+2,2))
-	plt.setp(ax,xticks=scale)
-	g.set(title='Most Frequently Used Words\n',xlabel='Word Count',ylabel='Word List')
-	plt.show()
+        sns.set_style('whitegrid')
+        sns.set_context("paper", font_scale=1.0)
+        f, ax = plt.subplots(figsize=(6, 8), dpi=120)
+
+        # Plot with custom color list
+        g = sns.barplot(x='Count', y='Word', data=trunc.iloc[:20], palette=colors)
+
+        import math
+        if pd.isna(max_count):
+            max_count_int = 0
+        else:
+            max_count_int = int(math.ceil(max_count))
+
+        scale = list(range(0, max_count_int + 2, 2))
+        plt.setp(ax, xticks=scale)
+        g.set(title='Most Frequently Used Words\n', xlabel='Word Count', ylabel='Word List')
+        plt.show()
